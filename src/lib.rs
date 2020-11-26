@@ -14,7 +14,7 @@
 
 use std::io::prelude::*;
 use std::io::{Error, ErrorKind};
-use std::net::TcpStream;
+use std::{io, net::TcpStream, time::Duration};
 
 extern crate md5;
 
@@ -161,6 +161,7 @@ struct PjlinkResponse {
 pub struct PjlinkDevice {
     pub host: String,
     password: String,
+    timeout: Option<Duration>,
     //managed: bool, // Currently not implemented but will add managed monitoring support with call backs with the status changes
     //monitored: bool, // Currenly not implemented by will allow you to monitor a device with out mainting authority over it.
 }
@@ -177,6 +178,7 @@ impl PjlinkDevice {
         Ok(PjlinkDevice {
             host: host.to_string(),
             password: String::from(password),
+            timeout: None,
             //managed: false, // Hard coded for now until it is implemented
             //monitored: false, // Hard coded for now until it is implemented
         })
@@ -186,7 +188,17 @@ impl PjlinkDevice {
     pub fn send_command(&self, command: &str) -> Result<String, Error> {
         let host_port = [&self.host, ":", PORT].concat();
         let mut client_buffer = [0u8; 256];
-        let mut stream = try!(TcpStream::connect(host_port));
+        let mut stream = if let Some(timeout) = self.timeout {
+            let addr = host_port
+                .parse()
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            let stream = TcpStream::connect_timeout(&addr, timeout)?;
+            stream.set_read_timeout(Some(timeout))?;
+            stream.set_write_timeout(Some(timeout))?;
+            stream
+        } else {
+            TcpStream::connect(host_port)?
+        };
 
         let _ = stream.read(&mut client_buffer); //Did we get the hello string?
 
@@ -423,11 +435,11 @@ impl PjlinkDevice {
             Ok(result) => {
                 let input = result.value.parse::<u8>().unwrap();
                 match input {
-                    11...19 => Ok(InputType::RGB(input - 10)),
-                    21...29 => Ok(InputType::Video(input - 20)),
-                    31...39 => Ok(InputType::Digital(input - 30)),
-                    41...49 => Ok(InputType::Storage(input - 40)),
-                    51...59 => Ok(InputType::Network(input - 50)),
+                    11..=19 => Ok(InputType::RGB(input - 10)),
+                    21..=29 => Ok(InputType::Video(input - 20)),
+                    31..=39 => Ok(InputType::Digital(input - 30)),
+                    41..=49 => Ok(InputType::Storage(input - 40)),
+                    51..=59 => Ok(InputType::Network(input - 50)),
                     _ => Err(Error::new(
                         ErrorKind::InvalidInput,
                         format!("Invalid input:: {}", input),
@@ -728,5 +740,14 @@ impl PjlinkDevice {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Set timeout for TCP connection. Pass `None` to use the OS default.
+    /// Use this function to set a shorter timeout when checking the status of
+    /// a projector, which could be offline. Passing a zero `Duration` will lead
+    /// to an error.
+    ///
+    pub fn set_timeout(&mut self, timeout: Option<Duration>) {
+        self.timeout = timeout;
     }
 }
